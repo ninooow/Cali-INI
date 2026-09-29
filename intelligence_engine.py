@@ -511,14 +511,16 @@ def load_operator_inputs():
     ]
     if os.path.exists(OPERATOR_INPUT_FILE):
         try:
-            df = pd.read_csv(OPERATOR_INPUT_FILE)
+            df = pd.read_csv(OPERATOR_INPUT_FILE, dtype=str)
             for c in cols:
                 if c not in df.columns:
                     df[c] = ""
-            return df[cols].copy()
+                else:
+                    df[c] = df[c].fillna("")
+            return df[cols].astype(object).copy()
         except Exception:
             pass
-    return pd.DataFrame(columns=cols)
+    return pd.DataFrame({c: pd.Series(dtype=object) for c in cols})
 
 
 def get_operator_input(operator_df, tag):
@@ -541,14 +543,16 @@ def load_action_history():
     ]
     if os.path.exists(ACTION_HISTORY_FILE):
         try:
-            df = pd.read_csv(ACTION_HISTORY_FILE)
+            df = pd.read_csv(ACTION_HISTORY_FILE, dtype=str)
             for c in cols:
                 if c not in df.columns:
                     df[c] = ""
-            return df[cols].copy()
+                else:
+                    df[c] = df[c].fillna("")
+            return df[cols].astype(object).copy()
         except Exception:
             pass
-    return pd.DataFrame(columns=cols)
+    return pd.DataFrame({c: pd.Series(dtype=object) for c in cols})
 
 
 def append_action_history(ticket_id, asset, update_source, event_type,
@@ -2195,7 +2199,7 @@ def load_problem_tank_history():
     ]
     if os.path.exists(PROBLEM_TANK_HISTORY_FILE):
         try:
-            df = pd.read_csv(PROBLEM_TANK_HISTORY_FILE)
+            df = pd.read_csv(PROBLEM_TANK_HISTORY_FILE, dtype=str)
             # Backward compatibility with earlier files where Ticket State was named Status.
             if "Ticket State" not in df.columns:
                 df["Ticket State"] = df["Status"] if "Status" in df.columns else "OPEN"
@@ -2204,12 +2208,19 @@ def load_problem_tank_history():
                 df["Action Status"] = "NOT_STARTED"
             for c in cols:
                 if c not in df.columns:
-                    df[c] = 0 if c == "Normal Streak" else ""
+                    df[c] = "0" if c == "Normal Streak" else ""
+                else:
+                    df[c] = df[c].fillna("")
             df["Action Status"] = df["Action Status"].replace("", np.nan).fillna("NOT_STARTED")
+            df["Normal Streak"] = pd.to_numeric(df["Normal Streak"], errors="coerce").fillna(0).astype(int)
+            for c in cols:
+                if c != "Normal Streak":
+                    df[c] = df[c].astype(object)
             return df[cols].copy()
         except Exception:
             pass
-    return pd.DataFrame(columns=cols)
+    empty_df = pd.DataFrame({c: pd.Series(dtype=int if c == "Normal Streak" else object) for c in cols})
+    return empty_df
 
 
 def save_problem_tank_history(df):
@@ -2247,6 +2258,9 @@ def update_persistent_ticket(history, asset, operator_context, condition_result,
     for c in ["Field Observation", "Update Source", "Last Observation"]:
         if c not in history.columns:
             history[c] = ""
+    for c in history.columns:
+        if c != "Normal Streak":
+            history[c] = history[c].astype(object)
 
     active = _active_ticket_row(history, tag)
     observation = pd.Timestamp(condition_result.get("decision_time", condition_result["current_time"]))
