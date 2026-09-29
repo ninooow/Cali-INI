@@ -1,0 +1,6 @@
+Asset,Status,Invalid Timestamp,Duplicate Timestamp,Missing Cells,Prefix OK,Issue
+PU-2101B,CHECK,0,0,0,True,Hourly calendar cadence has gaps; global mechanism taxonomy: 5 coarse labels; derived mapping exported for review
+KO-3201,CHECK,0,0,0,True,KO vibration unit override UNVERIFIED; confirm micrometre vs mm/s with data owner; Hourly calendar cadence has gaps; global mechanism taxonomy: 5 coarse labels; derived mapping exported for review
+PM-4405B,CHECK,0,0,0,True,Hourly calendar cadence has gaps; global mechanism taxonomy: 5 coarse labels; derived mapping exported for review
+HE-3301,CHECK,0,0,0,True,"HE-3301 generic hourly FEED/DISP/TEMP/VIB/AMP are preserved as DCS covariates. They are never relabeled as Tube-side dP/Heat Duty/Cold Outlet Temp directly; validated indirect models convert them to engineering-parameter estimates, while physics models still require verified stream/tap identities.; Hourly calendar cadence has gaps; global mechanism taxonomy: 5 coarse labels; derived mapping exported for review"
+BL-5702,CHECK,0,0,0,True,Hourly calendar cadence has gaps; global mechanism taxonomy: 5 coarse labels; derived mapping exported for review

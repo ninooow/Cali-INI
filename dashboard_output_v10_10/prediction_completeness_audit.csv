@@ -1,0 +1,4 @@
+Check,Status,Detail
+Engineering parameter count,PASS,20
+Finite Estimate/Lower/Upper + ordering + provenance,PASS,
+Fallback repairs,PASS,none

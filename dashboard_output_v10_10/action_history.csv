@@ -1,0 +1,5 @@
+Event Time,Ticket ID,Asset,Update Source,Event Type,Previous Ticket State,New Ticket State,Previous Action Status,New Action Status,Operator Decision,Operator,Owner Role,Field Observation,Comment
+2026-09-30 00:14:53,PT-20260930-PU2101B-001,PU-2101B,ENGINE,TICKET_CREATED,,OPEN,,NOT_STARTED,,,Reliability / Rotating Equipment,,
+2026-09-30 00:14:54,PT-20260930-KO3201-001,KO-3201,ENGINE,TICKET_CREATED,,OPEN,,NOT_STARTED,,,Reliability / Rotating Equipment,,
+2026-09-30 00:14:55,PT-20260930-PM4405B-001,PM-4405B,ENGINE,TICKET_CREATED,,OPEN,,NOT_STARTED,,,Electrical / Reliability,,
+2026-09-30 00:14:59,PT-20260930-BL5702-001,BL-5702,ENGINE,TICKET_CREATED,,OPEN,,NOT_STARTED,,,Reliability / Rotating Equipment,,
