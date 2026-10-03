@@ -169,8 +169,8 @@ def resolve_default_workbook():
     candidates = [env] if env else []
     here = Path(__file__).resolve().parent
     candidates += [
-        here / "All_Case_Data.xlsx", here / "All_Raw_Data.xlsx",
-        Path.cwd() / "All_Case_Data.xlsx", Path.cwd() / "All_Raw_Data.xlsx",
+        here / "All_Case_Data.xlsx", here / "All_Case_Data(1).xlsx", here / "All_Case_Data(2).xlsx", here / "All_Raw_Data.xlsx",
+        Path.cwd() / "All_Case_Data.xlsx", Path.cwd() / "All_Case_Data(1).xlsx", Path.cwd() / "All_Case_Data(2).xlsx", Path.cwd() / "All_Raw_Data.xlsx",
     ]
     for candidate in candidates:
         if candidate and Path(candidate).exists():
@@ -388,6 +388,9 @@ problems = data.get("problem_tank", pd.DataFrame()).copy()
 rca = data.get("rca", pd.DataFrame()).copy()
 parameter_asof = data.get("parameter_asof", pd.DataFrame()).copy()
 forecast = data.get("forecast", pd.DataFrame()).copy()
+case2_kpis = data.get("case2_kpis", pd.DataFrame()).copy()
+case2_coverage = data.get("case2_coverage", pd.DataFrame()).copy()
+energy_proxy_forecast = data.get("energy_proxy_forecast", pd.DataFrame()).copy()
 validation = data.get("validation", pd.DataFrame()).copy()
 lineage = data.get("lineage", pd.DataFrame()).copy()
 action_history = data.get("action_history", pd.DataFrame()).copy()
@@ -487,6 +490,71 @@ with tab_exec:
     c4.metric("Observed downtime in last 30 days", fmt_num(cards.get("downtime"), 1, " h") if cards.get("coverage", 0) > 0 else "—", help="Downtime calculated only from observed running-status data in the 30-day window.")
     c5.metric("Reliability and consequence index", fmt_num(cards.get("reliability"), 1, " / 100"), help="Decision index combining reliability context and historical consequence information.")
     st.caption(f"Observed operating-data coverage in the selected scope: {fmt_num(cards.get('coverage'), 0, ' hours')}.")
+
+    # Production and emissions are shown only where they add information that is
+    # not already represented by the main executive indicators above. Energy/load,
+    # downtime, and operational performance are intentionally not repeated here.
+    ck = case2_kpis.copy()
+    if asset_filter != "All assets" and not ck.empty and "Asset" in ck:
+        ck = ck.loc[ck["Asset"].eq(asset_filter)]
+
+    if not ck.empty:
+        prod = pd.to_numeric(ck.get("Production_Index"), errors="coerce").mean()
+        emis = pd.to_numeric(ck.get("Emission_Intensity_Proxy"), errors="coerce").mean()
+
+        st.markdown('<div class="section-title">Production and emissions context</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-desc">Additional plant-level context that is not duplicated in the main decision indicators. '
+            'Production is normalized to its measured running baseline; the emissions value is a relative electricity-related proxy only where supported by the available data.</div>',
+            unsafe_allow_html=True,
+        )
+        k1, k2 = st.columns(2)
+        k1.metric(
+            "Production index",
+            fmt_num(prod, 1),
+            help="Relative Plant Rate versus its measured healthy/running baseline. A value near 100 represents the reference production level.",
+        )
+        k2.metric(
+            "Emission intensity proxy",
+            fmt_num(emis, 1) if pd.notna(emis) else "—",
+            help="Relative electricity-related emission-intensity proxy under a constant emission-factor assumption. It is not a direct CEMS reading or kg CO2e measurement.",
+        )
+
+        context_cols = [
+            "Asset", "Production_Value", "Production_Unit", "Production_Index",
+            "Emission_Intensity_Proxy", "Emission_Observability",
+        ]
+        context_view = ck[[c for c in context_cols if c in ck.columns]].copy().rename(columns={
+            "Production_Value": "Plant rate",
+            "Production_Unit": "Production unit",
+            "Production_Index": "Production index",
+            "Emission_Intensity_Proxy": "Emission intensity proxy",
+            "Emission_Observability": "Emission data basis",
+        })
+        st.dataframe(context_view, use_container_width=True, hide_index=True)
+
+    st.markdown('<div class="section-title">Energy-related load outlook</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-desc">Forward view of the existing electrical/thermal load proxy. Index 100 is the measured healthy/running proxy baseline. '
+        'This is not a kWh, MW, fuel, steam, or GJ forecast.</div>',
+        unsafe_allow_html=True,
+    )
+    epf = energy_proxy_forecast.copy()
+    if asset_filter != "All assets" and not epf.empty and "Asset" in epf:
+        epf = epf.loc[epf["Asset"].eq(asset_filter)]
+    if epf.empty:
+        st.warning("No energy-related load proxy forecast is available for the current scope.")
+    else:
+        energy_cols = ["Asset", "Horizon", "Target_Time", "Energy_Load_Index", "Energy_Lower", "Energy_Upper", "Production_Index", "Energy_Intensity_Index", "Emission_Intensity_Proxy", "Proxy", "Source", "Quality"]
+        energy_view = epf[[c for c in energy_cols if c in epf.columns]].copy()
+        energy_view = energy_view.rename(columns={
+            "Target_Time": "Target time", "Energy_Load_Index": "Energy-related load index",
+            "Energy_Lower": "Energy lower bound", "Energy_Upper": "Energy upper bound",
+            "Production_Index": "Production index", "Energy_Intensity_Index": "Relative energy intensity index",
+            "Emission_Intensity_Proxy": "Emission intensity proxy", "Proxy": "Proxy basis",
+            "Source": "Trace source", "Quality": "Forecast quality",
+        })
+        st.dataframe(energy_view, use_container_width=True, hide_index=True)
 
     with st.expander("How these indicators are calculated and where they come from"):
         basis_cols = [c for c in [

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
- Intelligent Manufacturing V11.4 — governed runtime, traceable validation, and closed-loop actions
+ Intelligent Manufacturing V11.6 — Case-2 executive domains, governed proxies, and closed-loop actions
 ==============================================================================
 Reference time is resolved from the latest timestamp commonly available to all five assets at each engine run.
 
@@ -58,7 +58,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Pat
 FILE_PATH = os.environ.get("IM_WORKBOOK", str(SCRIPT_DIR / "All_Case_Data.xlsx"))
 if not Path(FILE_PATH).exists() and "IM_WORKBOOK" not in os.environ:
     for folder in (SCRIPT_DIR, Path.cwd()):
-        for name in ("All_Case_Data.xlsx", "All_Case_Data(1).xlsx", "All_Raw_Data.xlsx", "All_Raw_Data(1).xlsx"):
+        for name in ("All_Case_Data.xlsx", "All_Case_Data(1).xlsx", "All_Case_Data(2).xlsx", "All_Raw_Data.xlsx", "All_Raw_Data(1).xlsx", "All_Raw_Data(2).xlsx"):
             candidate = folder / name
             if candidate.exists():
                 FILE_PATH = str(candidate)
@@ -511,16 +511,14 @@ def load_operator_inputs():
     ]
     if os.path.exists(OPERATOR_INPUT_FILE):
         try:
-            df = pd.read_csv(OPERATOR_INPUT_FILE, dtype=str)
+            df = pd.read_csv(OPERATOR_INPUT_FILE)
             for c in cols:
                 if c not in df.columns:
                     df[c] = ""
-                else:
-                    df[c] = df[c].fillna("")
-            return df[cols].astype(object).copy()
+            return df[cols].copy()
         except Exception:
             pass
-    return pd.DataFrame({c: pd.Series(dtype=object) for c in cols})
+    return pd.DataFrame(columns=cols)
 
 
 def get_operator_input(operator_df, tag):
@@ -543,16 +541,14 @@ def load_action_history():
     ]
     if os.path.exists(ACTION_HISTORY_FILE):
         try:
-            df = pd.read_csv(ACTION_HISTORY_FILE, dtype=str)
+            df = pd.read_csv(ACTION_HISTORY_FILE)
             for c in cols:
                 if c not in df.columns:
                     df[c] = ""
-                else:
-                    df[c] = df[c].fillna("")
-            return df[cols].astype(object).copy()
+            return df[cols].copy()
         except Exception:
             pass
-    return pd.DataFrame({c: pd.Series(dtype=object) for c in cols})
+    return pd.DataFrame(columns=cols)
 
 
 def append_action_history(ticket_id, asset, update_source, event_type,
@@ -2199,7 +2195,7 @@ def load_problem_tank_history():
     ]
     if os.path.exists(PROBLEM_TANK_HISTORY_FILE):
         try:
-            df = pd.read_csv(PROBLEM_TANK_HISTORY_FILE, dtype=str)
+            df = pd.read_csv(PROBLEM_TANK_HISTORY_FILE)
             # Backward compatibility with earlier files where Ticket State was named Status.
             if "Ticket State" not in df.columns:
                 df["Ticket State"] = df["Status"] if "Status" in df.columns else "OPEN"
@@ -2208,19 +2204,12 @@ def load_problem_tank_history():
                 df["Action Status"] = "NOT_STARTED"
             for c in cols:
                 if c not in df.columns:
-                    df[c] = "0" if c == "Normal Streak" else ""
-                else:
-                    df[c] = df[c].fillna("")
+                    df[c] = 0 if c == "Normal Streak" else ""
             df["Action Status"] = df["Action Status"].replace("", np.nan).fillna("NOT_STARTED")
-            df["Normal Streak"] = pd.to_numeric(df["Normal Streak"], errors="coerce").fillna(0).astype(int)
-            for c in cols:
-                if c != "Normal Streak":
-                    df[c] = df[c].astype(object)
             return df[cols].copy()
         except Exception:
             pass
-    empty_df = pd.DataFrame({c: pd.Series(dtype=int if c == "Normal Streak" else object) for c in cols})
-    return empty_df
+    return pd.DataFrame(columns=cols)
 
 
 def save_problem_tank_history(df):
@@ -2258,9 +2247,6 @@ def update_persistent_ticket(history, asset, operator_context, condition_result,
     for c in ["Field Observation", "Update Source", "Last Observation"]:
         if c not in history.columns:
             history[c] = ""
-    for c in history.columns:
-        if c != "Normal Streak":
-            history[c] = history[c].astype(object)
 
     active = _active_ticket_row(history, tag)
     observation = pd.Timestamp(condition_result.get("decision_time", condition_result["current_time"]))
@@ -5238,6 +5224,248 @@ def executive_asof_data(results):
     if not np.isfinite(metrics_df[numeric].to_numpy(float)).all(): raise ValueError('Executive KPI transformation produced a non-finite decision value')
     PF_EXECUTIVE_CACHE=(metrics,trends);return PF_EXECUTIVE_CACHE
 
+
+def case2_executive_domain_kpis(results, executive_df):
+    """Build one governed KPI row per asset for the five executive domains in Case 2.
+
+    Important governance rule:
+    - Production and downtime use observed plant/work-status data when available.
+    - Operational performance is a derived decision KPI.
+    - Energy is a relative load proxy because the workbook has no kWh/MW/steam/fuel meter.
+    - Emission is *not* reported as kg CO2e.  For electrically driven assets only, a
+      relative Scope-2-like emission-intensity proxy is provided under the explicit
+      assumption of a constant electricity emission factor.  This makes the Case-2
+      domain visible without fabricating a physical emission measurement.
+    """
+    rows = []
+    ex = executive_df.set_index('Asset') if not executive_df.empty and 'Asset' in executive_df else pd.DataFrame()
+
+    for r in results:
+        tag = r['tag_number']
+        asset = r['asset']
+        params = r['projection']['parameters']
+        channels = pf_channels(asset)
+        erow = ex.loc[tag] if (not ex.empty and tag in ex.index) else pd.Series(dtype=object)
+
+        # Production: native Plant Rate retained, plus a normalized index against the
+        # measured healthy/running baseline.  This is separate from OPI.
+        production_value = np.nan
+        production_index = np.nan
+        production_unit = ''
+        production_source = 'NOT_OBSERVABLE'
+        production_basis = 'Plant Rate unavailable'
+        if 'PLANT_RATE' in channels:
+            tr = channels['PLANT_RATE']['trace']
+            ts = AS_OF if AS_OF in tr.index else tr.index[tr.index <= AS_OF].max()
+            if pd.notna(ts):
+                z = tr.loc[ts]
+                production_value = safe_float(z.Estimate, np.nan)
+                production_source = str(z.Source)
+                base, base_basis = pf_actual_channel_baseline(asset, 'PLANT_RATE', params)
+                if base is not None and np.isfinite(safe_float(base, np.nan)) and abs(float(base)) > 1e-12:
+                    production_index = float(np.clip(100.0 * production_value / float(base), 0.0, 300.0))
+                    production_basis = 'Plant Rate / measured healthy-running Plant Rate baseline | ' + str(base_basis)
+                # Recover the engineering unit from the tag dictionary when possible.
+                tags = asset.get('df_tags', pd.DataFrame())
+                if not tags.empty and 'PI Tag' in tags.columns:
+                    rr = tags.loc[tags['PI Tag'].astype(str).str.upper().eq('PLANT_RATE')]
+                    if not rr.empty:
+                        production_unit = str(rr.iloc[0].get('engunits', '') or '')
+
+        # Energy-related load proxy is already governed in the executive layer.
+        energy_index = safe_float(erow.get('Load_Proxy_Index'), np.nan)
+        energy_metric = str(erow.get('Load_Metric_Name', 'Not observable'))
+        energy_basis = str(erow.get('Load_KPI_Basis', 'No validated load proxy'))
+        energy_observability = 'INDIRECT / PROXY' if np.isfinite(energy_index) else 'NOT OBSERVABLE'
+
+        # Relative energy intensity versus production.  100 = same relative load per
+        # relative production as the healthy baseline.  It is dimensionless, not GJ/t.
+        energy_intensity = np.nan
+        if np.isfinite(energy_index) and np.isfinite(production_index) and production_index > 1e-12:
+            energy_intensity = float(np.clip(100.0 * energy_index / production_index, 0.0, 500.0))
+
+        # Relative emission-intensity proxy is only defensible for electrical-load
+        # proxies under a constant grid emission factor.  Heat Duty is not automatically
+        # an emission source, therefore HE-3301 remains not observable for emission.
+        emission_proxy = np.nan
+        emission_observability = 'NOT OBSERVABLE'
+        emission_basis = 'Direct CEMS/fuel/emission-factor data unavailable'
+        if np.isfinite(energy_intensity) and energy_metric.lower().startswith('electrical load proxy'):
+            emission_proxy = energy_intensity
+            emission_observability = 'INDIRECT PROXY — ELECTRICITY-RELATED'
+            emission_basis = ('Relative electrical-load intensity × constant electricity emission-factor assumption; '
+                              'dimensionless proxy only, not kg CO2e')
+
+        rows.append(dict(
+            Asset=tag,
+            Production_Value=production_value,
+            Production_Unit=production_unit,
+            Production_Index=production_index,
+            Production_Source=production_source,
+            Production_Basis=production_basis,
+            Energy_Load_Index=energy_index,
+            Energy_Metric=energy_metric,
+            Energy_Intensity_Index=energy_intensity,
+            Energy_Observability=energy_observability,
+            Energy_Basis=energy_basis,
+            Emission_Intensity_Proxy=emission_proxy,
+            Emission_Observability=emission_observability,
+            Emission_Basis=emission_basis,
+            Downtime_30d_h=safe_float(erow.get('Downtime_30d_h'), np.nan),
+            Availability_30d_pct=safe_float(erow.get('Availability_30d_pct'), np.nan),
+            Downtime_Observability='DIRECT / OBSERVED',
+            Operational_Performance_Index=safe_float(erow.get('Operating_Performance_Index'), np.nan),
+            Asset_Health_Score=safe_float(erow.get('Asset_Health_Score'), np.nan),
+            Reliability_Consequence_Index=safe_float(erow.get('Reliability_Consequence_Index'), np.nan),
+            Operational_Performance_Observability='DERIVED DECISION KPI',
+        ))
+    return pd.DataFrame(rows)
+
+
+def case2_requirement_coverage(executive_df, case2_kpis=None):
+    """Map implementation status to the five executive domains named in CALIBER Case 2."""
+    case2_kpis = pd.DataFrame() if case2_kpis is None else case2_kpis
+    has_rate = bool(not case2_kpis.empty and case2_kpis.get('Production_Index', pd.Series(dtype=float)).notna().any())
+    has_downtime = bool('Downtime_30d_h' in executive_df.columns and executive_df['Downtime_30d_h'].notna().any())
+    has_load = bool(not case2_kpis.empty and case2_kpis.get('Energy_Load_Index', pd.Series(dtype=float)).notna().any())
+    has_emission_proxy = bool(not case2_kpis.empty and case2_kpis.get('Emission_Intensity_Proxy', pd.Series(dtype=float)).notna().any())
+    has_health = bool('Asset_Health_Score' in executive_df.columns and executive_df['Asset_Health_Score'].notna().any())
+
+    rows = [
+        dict(
+            Case2_Domain='Production', Coverage_Status='COVERED', Observability='DIRECT + DERIVED',
+            Dashboard_Metric='Plant Rate + Production Index + Operating Performance Index',
+            Data_Basis='Observed Plant Rate where available; normalized against measured healthy/running baseline',
+            Interpretation='Shows native throughput and relative production performance without replacing the original production unit.',
+            Limitation='Production Index is normalized; native Plant Rate remains the physical production measurement.' if has_rate else 'Production is not observable in the current runtime.'
+        ),
+        dict(
+            Case2_Domain='Energy', Coverage_Status='PARTIAL — GOVERNED PROXY', Observability='INDIRECT / PROXY',
+            Dashboard_Metric='Energy-related Load Index + Relative Energy Intensity + forward outlook',
+            Data_Basis='Motor current (AMP) for electrically driven assets; Heat Duty for HE-3301',
+            Interpretation='Tracks relative load and load-per-relative-production against measured healthy/running baselines.',
+            Limitation='Not kWh, MW, steam, fuel, or GJ. Direct energy consumption requires validated power/utility metering.' if has_load else 'No energy-related load proxy is observable.'
+        ),
+        dict(
+            Case2_Domain='Emission', Coverage_Status=('PARTIAL — GOVERNED PROXY' if has_emission_proxy else 'DATA SOURCE REQUIRED'),
+            Observability=('INDIRECT PROXY — ELECTRICITY-RELATED' if has_emission_proxy else 'NOT OBSERVABLE'),
+            Dashboard_Metric='Relative Electricity-related Emission Intensity Proxy',
+            Data_Basis='Electrical-load intensity with constant electricity emission-factor assumption; HE-3301 thermal duty is not converted to emission',
+            Interpretation='Makes direction of electricity-related indirect emission intensity visible without fabricating kg CO2e.',
+            Limitation='Not a CEMS/stack measurement and not absolute CO2e. Direct emission KPI requires CEMS or governed energy × validated emission factor.'
+        ),
+        dict(
+            Case2_Domain='Downtime', Coverage_Status='COVERED', Observability='DIRECT / OBSERVED',
+            Dashboard_Metric='Downtime 30 d / Availability / Observed Coverage',
+            Data_Basis='Duration-weighted RUN_STATUS with AMP running check',
+            Interpretation='Quantifies observed lost operating time while reporting data coverage so missing data are not interpreted as zero downtime.',
+            Limitation='Accuracy depends on RUN_STATUS/AMP coverage and timestamp integrity.' if has_downtime else 'Downtime is not observable in the current runtime.'
+        ),
+        dict(
+            Case2_Domain='Operational Performance', Coverage_Status='COVERED', Observability='DERIVED DECISION KPI',
+            Dashboard_Metric='Asset Health Score / Operating Performance Index / Reliability & Consequence Index',
+            Data_Basis='Engineering margins, measured healthy baselines, production/load context, stability, and historical consequence',
+            Interpretation='Converts heterogeneous equipment signals into decision-level condition and reliability indicators while retaining provenance.',
+            Limitation='Decision indices are not physical measurements or failure probabilities.' if has_health else 'Operational performance is not observable in the current runtime.'
+        ),
+    ]
+    return pd.DataFrame(rows)
+
+
+def case2_energy_proxy_forecast(results, executive_df):
+    """Forward outlook for production, energy proxy, relative intensity, and emission proxy.
+
+    This reuses existing canonical traces and does not fit a second model.  All energy
+    and emission outputs are dimensionless proxies unless direct meters/factors are
+    later integrated.
+    """
+    rows = []
+    executive_lookup = executive_df.set_index('Asset') if not executive_df.empty and 'Asset' in executive_df else pd.DataFrame()
+    horizons = [('H+24', 24), ('H+72', 72), ('H+168', 168)]
+
+    for r in results:
+        tag = r['tag_number']
+        asset = r['asset']
+        params = r['projection']['parameters']
+        channels = pf_channels(asset)
+
+        # Resolve the energy-related load trace and baseline.
+        load_name = None; load_basis = None; load_trace = None; load_base = None
+        if 'AMP' in channels and tag != 'HE-3301':
+            load_name = 'Electrical Load Proxy (motor current)'
+            load_trace = channels['AMP']['trace']
+            load_base, base_basis = pf_actual_channel_baseline(asset, 'AMP', params)
+            load_basis = 'AMP / measured healthy-running AMP baseline | ' + str(base_basis)
+        elif 'Heat Duty' in params:
+            load_name = 'Thermal Load Proxy (heat duty)'
+            load_trace = params['Heat Duty']['trace']
+            baselines, baseline_basis, _ = pf_asset_baselines(params, build_limit_dict(asset['df_limits']))
+            load_base = baselines.get('Heat Duty')
+            load_basis = 'Heat Duty / measured healthy engineering baseline | ' + str(baseline_basis.get('Heat Duty', 'NOT_OBSERVABLE'))
+
+        # Resolve Plant Rate so energy intensity can be forecast against relative production.
+        production_trace = channels.get('PLANT_RATE', {}).get('trace') if 'PLANT_RATE' in channels else None
+        production_base = None; production_basis = 'Plant Rate unavailable'
+        if production_trace is not None:
+            production_base, pbasis = pf_actual_channel_baseline(asset, 'PLANT_RATE', params)
+            production_basis = 'Plant Rate / measured healthy-running baseline | ' + str(pbasis)
+
+        valid_load = load_trace is not None and load_base is not None and np.isfinite(safe_float(load_base, np.nan)) and abs(float(load_base)) > 1e-12
+        valid_prod = production_trace is not None and production_base is not None and np.isfinite(safe_float(production_base, np.nan)) and abs(float(production_base)) > 1e-12
+        is_electrical = bool(load_name and load_name.lower().startswith('electrical load proxy'))
+
+        current = safe_float(executive_lookup.loc[tag, 'Load_Proxy_Index'], np.nan) if tag in executive_lookup.index else np.nan
+        rows.append(dict(
+            Asset=tag, Horizon='AS-OF', Target_Time=AS_OF,
+            Energy_Load_Index=current,
+            Energy_Lower=np.nan, Energy_Upper=np.nan,
+            Production_Index=np.nan, Energy_Intensity_Index=np.nan,
+            Emission_Intensity_Proxy=np.nan,
+            Proxy=load_name or 'Not observable', Source='EXECUTIVE_CURRENT' if np.isfinite(current) else 'NOT_OBSERVABLE',
+            Quality='CURRENT' if np.isfinite(current) else 'NOT_OBSERVABLE',
+            Energy_Basis=load_basis or 'No validated load-proxy baseline', Production_Basis=production_basis,
+            Emission_Basis=('Constant electricity emission-factor assumption; dimensionless proxy only' if is_electrical else 'Not observable from current asset data'),
+            Interpretation='Index 100 is the relevant measured healthy/running baseline; no physical kWh/MW/GJ or kg CO2e is claimed.'
+        ))
+
+        if not valid_load:
+            continue
+
+        for label, hours in horizons:
+            t = AS_OF + pd.Timedelta(hours=hours)
+            if t not in load_trace.index:
+                continue
+            z = load_trace.loc[t]
+            eidx = 100.0 * safe_float(z.Estimate, np.nan) / float(load_base)
+            elo = 100.0 * safe_float(z.Lower, np.nan) / float(load_base)
+            ehi = 100.0 * safe_float(z.Upper, np.nan) / float(load_base)
+            if elo > ehi: elo, ehi = ehi, elo
+
+            pidx = np.nan
+            if valid_prod and t in production_trace.index:
+                pz = production_trace.loc[t]
+                pidx = 100.0 * safe_float(pz.Estimate, np.nan) / float(production_base)
+
+            intensity = np.nan
+            if np.isfinite(eidx) and np.isfinite(pidx) and pidx > 1e-12:
+                intensity = 100.0 * eidx / pidx
+            emission_proxy = intensity if (is_electrical and np.isfinite(intensity)) else np.nan
+
+            rows.append(dict(
+                Asset=tag, Horizon=label, Target_Time=t,
+                Energy_Load_Index=float(np.clip(eidx, 0.0, 300.0)) if np.isfinite(eidx) else np.nan,
+                Energy_Lower=float(np.clip(elo, 0.0, 300.0)) if np.isfinite(elo) else np.nan,
+                Energy_Upper=float(np.clip(ehi, 0.0, 300.0)) if np.isfinite(ehi) else np.nan,
+                Production_Index=float(np.clip(pidx, 0.0, 300.0)) if np.isfinite(pidx) else np.nan,
+                Energy_Intensity_Index=float(np.clip(intensity, 0.0, 500.0)) if np.isfinite(intensity) else np.nan,
+                Emission_Intensity_Proxy=float(np.clip(emission_proxy, 0.0, 500.0)) if np.isfinite(emission_proxy) else np.nan,
+                Proxy=load_name, Source=str(z.Source), Quality=str(z.Quality),
+                Energy_Basis=load_basis, Production_Basis=production_basis,
+                Emission_Basis=('Constant electricity emission-factor assumption; dimensionless proxy only' if is_electrical else 'Not observable from current asset data'),
+                Interpretation='Forecast of relative load and intensity only; not a forecast of physical energy or absolute emissions.'
+            ))
+    return pd.DataFrame(rows)
+
 def pf_native_weekly_export(results):
     rows=[]
     for r in results:
@@ -5560,8 +5788,14 @@ def build_decision_frames(results, events, executive=None, audit=None):
         )
 
     audit_df = pd.DataFrame() if audit is None else audit.copy()
+    case2_kpis_df = case2_executive_domain_kpis(results, executive_df)
+    case2_coverage_df = case2_requirement_coverage(executive_df, case2_kpis_df)
+    energy_proxy_forecast_df = case2_energy_proxy_forecast(results, executive_df)
     return {
         'executive': executive_snapshot,
+        'case2_kpis': case2_kpis_df,
+        'case2_coverage': case2_coverage_df,
+        'energy_proxy_forecast': energy_proxy_forecast_df,
         'executive_trends': trends,
         'problem_tank': problem_df,
         'rca': rca_df,
