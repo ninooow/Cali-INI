@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+.01_DATABASE_AND_SEEDER.md
+.02_INTELLIGENCE_ENGINE.md
+.03_API_SPEC.md
+.AI_HANDOFF.md
+.frontend_guide.md
+*.db

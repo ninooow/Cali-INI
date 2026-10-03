@@ -5835,11 +5835,11 @@ def build_decision_frames(results, events, executive=None, audit=None):
     }
 
 
-def run_intelligence_engine(file_path=None, export_artifacts=False, generate_audit_plots=False,
-                            run_historical_replay=False, verbose=False):
+def run_intelligence_engine(file_path=None, workbook_data=None, export_artifacts=False, generate_audit_plots=False,
+                            run_historical_replay=False, verbose=False, global_tables_override=None):
     """Run the V11.3 indirect-canonical intelligence engine once and return structured in-memory results.
 
-    Streamlit should cache this function. UI interactions only filter/render its return
+    Streamlit / FastAPI should cache this function. UI interactions only filter/render its return
     value; they must not rerun forecasting, RCA, validation, export, or Matplotlib plots.
     """
     global FILE_PATH, VERBOSE_CONSOLE, RUN_HISTORICAL_REPLAY
@@ -5850,20 +5850,21 @@ def run_intelligence_engine(file_path=None, export_artifacts=False, generate_aud
 
     PHASE_TIMINGS.clear()
     ensure_output_dir()
-    if not os.path.exists(FILE_PATH):
+    if workbook_data is None and not os.path.exists(FILE_PATH):
         raise FileNotFoundError('Set IM_WORKBOOK / file_path ke lokasi workbook All_Case_Data.xlsx.')
 
     total_start = perf_counter()
     t = perf_counter()
-    workbook = pd.ExcelFile(FILE_PATH)
-    workbook_data = pd.read_excel(workbook, sheet_name=None)
+    if workbook_data is None:
+        workbook = pd.ExcelFile(FILE_PATH)
+        workbook_data = pd.read_excel(workbook, sheet_name=None)
     runtime_context = refresh_runtime_context(workbook_data)
     # A fresh engine run may follow an edited workbook; analytical caches must never
     # survive across a changed AS_OF/source workbook. Streamlit provides the outer cache.
     pf_reset_cache(force=True)
     tables = load_global_tables(workbook_data)
-    tables['operator_inputs'] = load_operator_inputs()
-    tables['ticket_history'] = load_problem_tank_history()
+    tables['operator_inputs'] = global_tables_override.get('operator_inputs') if global_tables_override and 'operator_inputs' in global_tables_override else load_operator_inputs()
+    tables['ticket_history'] = global_tables_override.get('ticket_history') if global_tables_override and 'ticket_history' in global_tables_override else load_problem_tank_history()
     tables['runtime_mode'] = {'mode': 'SNAPSHOT', 'reference_time': AS_OF}
     _time_phase('Data loading', t)
 
