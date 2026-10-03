@@ -378,42 +378,41 @@ class EngineDataAdapter:
                 db.add(rca_match)
 
             # Persist Forecasts
-            # Build a traces dict compatible with the existing processing loop
-            traces = {}
+            forecast_objects = []
             proj = asset_res.get("projection", {})
+
             for param_name, param_info in proj.get("parameters", {}).items():
                 trace = param_info.get("trace")
-                if isinstance(trace, dict):
-                    traces[param_name] = trace
-            forecast_objects = []
-            for param_name, trace_data in traces.items():
-                if not isinstance(trace_data, dict):
+
+                if not isinstance(trace, pd.DataFrame) or trace.empty:
                     continue
-                estimates = trace_data.get("Estimate", pd.Series(dtype=float))
-                lowers = trace_data.get("Lower", pd.Series(dtype=float))
-                uppers = trace_data.get("Upper", pd.Series(dtype=float))
-                model_name = trace_data.get("model", "")
-                
-                # Sample or save forecast horizon points
-                if isinstance(estimates, pd.Series):
-                    for t_idx, val in estimates.items():
-                        if pd.isna(val):
-                            continue
-                        t_time = pd.to_datetime(t_idx)
-                        low_val = lowers.get(t_idx, np.nan) if isinstance(lowers, pd.Series) else np.nan
-                        up_val = uppers.get(t_idx, np.nan) if isinstance(uppers, pd.Series) else np.nan
-                        
-                        forecast_objects.append(ParameterForecast(
-                            run_id=run.run_id,
-                            asset_id=asset_obj.asset_id,
-                            canonical_param=param_name,
-                            anchor_time=reference_time or datetime.now(),
-                            target_time=t_time,
-                            estimate=float(val),
-                            lower_bound=float(low_val) if pd.notna(low_val) else None,
-                            upper_bound=float(up_val) if pd.notna(up_val) else None,
-                            model_family=str(model_name)
-                        ))
+
+                model_info = param_info.get("model", {})
+                model_name = (
+                    model_info.get("fit", {}).get("name", "")
+                    if isinstance(model_info, dict)
+                    else str(model_info)
+                )
+
+                for t_idx, row in trace.iterrows():
+                    val = row.get("Estimate", np.nan)
+                    if pd.isna(val):
+                        continue
+
+                    low_val = row.get("Lower", np.nan)
+                    up_val = row.get("Upper", np.nan)
+
+                    forecast_objects.append(ParameterForecast(
+                        run_id=run.run_id,
+                        asset_id=asset_obj.asset_id,
+                        canonical_param=param_name,
+                        anchor_time=reference_time or datetime.now(),
+                        target_time=pd.to_datetime(t_idx),
+                        estimate=float(val),
+                        lower_bound=float(low_val) if pd.notna(low_val) else None,
+                        upper_bound=float(up_val) if pd.notna(up_val) else None,
+                        model_family=str(model_name)
+                    ))
             if forecast_objects:
                 db.bulk_save_objects(forecast_objects)
 
